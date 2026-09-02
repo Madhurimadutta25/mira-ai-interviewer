@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-const ollama = new OpenAI({
-  baseURL: "http://localhost:11434/v1",
-  apiKey: "ollama",
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 type MiraResult = {
@@ -247,11 +246,11 @@ Use exactly this structure:
 All five scores must be integers between 1 and 10.
 `;
 
-    console.log("Sending request to Ollama...");
+    console.log("Sending request to OpenAI...");
 
     const response =
-      await ollama.chat.completions.create({
-        model: "llama3.2:3b",
+      await openai.chat.completions.create({
+        model: "gpt-4o-mini",
 
         messages: [
           {
@@ -267,7 +266,6 @@ All five scores must be integers between 1 and 10.
 
         temperature: 0,
 
-        // This tells Ollama to force JSON output
         response_format: {
           type: "json_object",
         },
@@ -276,9 +274,7 @@ All five scores must be integers between 1 and 10.
     const content =
       response.choices?.[0]?.message?.content;
 
-    console.log(
-      "RAW OLLAMA RESPONSE:"
-    );
+    console.log("RAW OPENAI RESPONSE:");
 
     console.log(content);
 
