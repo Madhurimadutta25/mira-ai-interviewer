@@ -5,11 +5,12 @@ const genAI = new GoogleGenerativeAI(
   process.env.GEMINI_API_KEY || ""
 );
 
-// Try these models in order if one fails
+// Current stable models from ai.google.dev/gemini-api/docs/models (Sep 2026)
+// Listed from fastest/cheapest to most capable
 const MODELS = [
-  "gemini-1.5-flash-latest",
-  "gemini-1.5-flash",
-  "gemini-1.5-pro-latest",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-3.5-flash",
 ];
 
 type MiraResult = {
@@ -90,32 +91,30 @@ async function callGemini(prompt: string): Promise<string> {
     try {
       console.log(`Trying model: ${modelName}`);
 
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0,
-        },
-      });
+      const model = genAI.getGenerativeModel({ model: modelName });
 
       const result = await model.generateContent(prompt);
       const text = result.response.text();
 
-      if (text) {
+      if (text && text.trim()) {
         console.log(`Success with model: ${modelName}`);
         return text;
       }
     } catch (err: any) {
-      console.error(`Model ${modelName} failed:`, err?.message || err);
+      const msg = String(err?.message || err);
+      console.error(`Model ${modelName} failed: ${msg}`);
       lastError = err;
 
-      // If it's a 503 or 429, try next model
-      // If it's auth error (API key invalid), stop immediately
-      const msg = err?.message || "";
-      if (msg.includes("API_KEY") || msg.includes("401") || msg.includes("403")) {
+      // Stop immediately on auth errors
+      if (
+        msg.includes("API_KEY") ||
+        msg.includes("401") ||
+        msg.includes("403") ||
+        msg.includes("API key")
+      ) {
         throw err;
       }
-      // Otherwise continue to next model
+      // Otherwise try the next model
     }
   }
 
@@ -146,46 +145,34 @@ export async function POST(request: Request) {
       );
     }
 
-    const prompt = `You are MIRA, an AI interviewer. Evaluate the candidate's answer.
+    const prompt = `You are MIRA, an AI interviewer. Evaluate the candidate's answer and return ONLY a JSON object with no markdown, no code fences, and no extra text before or after.
 
-Candidate:
-Name: ${candidateName}
+Candidate: ${candidateName}
 Role: ${role}
 Experience: ${experience}
 Interview Type: ${interviewType}
 
 Question: ${question}
 
-Candidate Answer: ${answer}
+Answer: ${answer}
 
-Score these 5 categories as integers from 1 to 10:
-- communication: Clarity and confidence
-- relevance: How directly it answers the question
-- structure: Logical organization
-- technicalDepth: Technical accuracy for the role
-- score: Overall quality
-
-Also provide:
-- evaluation: 2-3 sentence professional evaluation
-- strengths: Array of 3 strengths
-- improvements: Array of 3 areas to improve
-- followUpQuestion: One follow-up interview question
-
-Return ONLY valid JSON, no markdown, no extra text:
+Return this exact JSON structure:
 {
-  "evaluation": "...",
+  "evaluation": "2-3 sentence professional evaluation of the answer",
   "communication": 7,
   "relevance": 7,
   "structure": 7,
   "technicalDepth": 7,
   "score": 7,
-  "strengths": ["...", "...", "..."],
-  "improvements": ["...", "...", "..."],
-  "followUpQuestion": "..."
-}`;
+  "strengths": ["strength 1", "strength 2", "strength 3"],
+  "improvements": ["improvement 1", "improvement 2", "improvement 3"],
+  "followUpQuestion": "one relevant follow-up interview question"
+}
+
+All score fields (communication, relevance, structure, technicalDepth, score) must be integers from 1 to 10.
+Return ONLY the JSON object. Nothing else.`;
 
     const content = await callGemini(prompt);
-
     console.log("RAW GEMINI RESPONSE:", content);
 
     let parsed;
@@ -193,6 +180,7 @@ Return ONLY valid JSON, no markdown, no extra text:
       parsed = JSON.parse(extractJson(content));
     } catch (parseError) {
       console.error("JSON parse error:", parseError);
+      console.error("Raw content was:", content);
       return NextResponse.json(
         { success: false, error: "MIRA returned an invalid response. Please try again." },
         { status: 500 }
@@ -206,12 +194,17 @@ Return ONLY valid JSON, no markdown, no extra text:
   } catch (error: any) {
     console.error("MIRA API ERROR:", error);
 
-    const msg = error?.message || "";
+    const msg = String(error?.message || error);
     let userError = "MIRA could not process your answer. Please try again.";
 
     if (msg.includes("503") || msg.includes("high demand") || msg.includes("unavailable")) {
       userError = "MIRA is experiencing high demand. Please try again in a few seconds.";
-    } else if (msg.includes("API_KEY") || msg.includes("401") || msg.includes("403")) {
+    } else if (
+      msg.includes("API_KEY") ||
+      msg.includes("401") ||
+      msg.includes("403") ||
+      msg.includes("API key")
+    ) {
       userError = "API key error. Please check the GEMINI_API_KEY in Render environment variables.";
     }
 
