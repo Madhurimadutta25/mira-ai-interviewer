@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(
+  process.env.GEMINI_API_KEY || ""
+);
 
 type MiraResult = {
   evaluation: string;
@@ -27,8 +27,7 @@ function extractJson(text: string): string {
     .replace(/\s*```$/i, "")
     .trim();
 
-  // If there is extra text before/after JSON,
-  // extract the JSON object.
+  // Extract the JSON object if there is surrounding text
   const firstBrace = cleaned.indexOf("{");
   const lastBrace = cleaned.lastIndexOf("}");
 
@@ -77,48 +76,23 @@ function normalizeResult(data: any): MiraResult {
         ? data.evaluation.trim()
         : "The candidate demonstrated a reasonable understanding of the topic.",
 
-    communication: numberOrDefault(
-      data?.communication,
-      6
-    ),
+    communication: numberOrDefault(data?.communication, 6),
+    relevance: numberOrDefault(data?.relevance, 6),
+    structure: numberOrDefault(data?.structure, 6),
+    technicalDepth: numberOrDefault(data?.technicalDepth, 6),
+    score: numberOrDefault(data?.score, 6),
 
-    relevance: numberOrDefault(
-      data?.relevance,
-      6
-    ),
+    strengths: stringArray(data?.strengths, [
+      "The candidate attempted to answer the question.",
+      "The answer addressed the main topic.",
+      "The candidate showed basic understanding.",
+    ]),
 
-    structure: numberOrDefault(
-      data?.structure,
-      6
-    ),
-
-    technicalDepth: numberOrDefault(
-      data?.technicalDepth,
-      6
-    ),
-
-    score: numberOrDefault(
-      data?.score,
-      6
-    ),
-
-    strengths: stringArray(
-      data?.strengths,
-      [
-        "The candidate attempted to answer the question.",
-        "The answer addressed the main topic.",
-        "The candidate showed basic understanding.",
-      ]
-    ),
-
-    improvements: stringArray(
-      data?.improvements,
-      [
-        "Provide more specific examples.",
-        "Structure the answer more clearly.",
-        "Add more technical detail where appropriate.",
-      ]
-    ),
+    improvements: stringArray(data?.improvements, [
+      "Provide more specific examples.",
+      "Structure the answer more clearly.",
+      "Add more technical detail where appropriate.",
+    ]),
 
     followUpQuestion:
       typeof data?.followUpQuestion === "string" &&
@@ -155,17 +129,13 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "Question and answer are required.",
+          error: "Question and answer are required.",
         },
         { status: 400 }
       );
     }
 
-    const prompt = `
-You are MIRA, an AI interviewer.
-
-Evaluate the candidate's answer.
+    const prompt = `You are MIRA, an AI interviewer. Evaluate the candidate's answer.
 
 Candidate:
 Name: ${candidateName}
@@ -179,50 +149,22 @@ ${question}
 Candidate Answer:
 ${answer}
 
-Evaluate the answer using these five scores:
-
-communication
-relevance
-structure
-technicalDepth
-score
-
-Each score must be an integer from 1 to 10.
-
-Definitions:
-
-communication:
-How clearly and confidently the candidate communicates.
-
-relevance:
-How directly the answer addresses the question.
-
-structure:
-How logically and clearly the answer is organized.
-
-technicalDepth:
-How technically accurate and detailed the answer is for the selected role.
-
-score:
-Overall quality of the answer.
+Evaluate using these five scores (integers from 1 to 10):
+- communication: How clearly and confidently the candidate communicates.
+- relevance: How directly the answer addresses the question.
+- structure: How logically and clearly the answer is organized.
+- technicalDepth: How technically accurate and detailed the answer is for the selected role.
+- score: Overall quality of the answer.
 
 Also provide:
-- evaluation
-- 3 strengths
-- 3 improvements
-- one relevant follow-up interview question
+- evaluation: Brief professional evaluation (2-3 sentences)
+- strengths: Array of 3 strengths
+- improvements: Array of 3 areas for improvement
+- followUpQuestion: One relevant follow-up interview question
 
-IMPORTANT:
-
-Return ONLY a JSON object.
-
-Do NOT use markdown.
-Do NOT use code fences.
-Do NOT write anything before the JSON.
-Do NOT write anything after the JSON.
+IMPORTANT: Return ONLY a valid JSON object. No markdown, no code fences, no extra text.
 
 Use exactly this structure:
-
 {
   "evaluation": "Brief professional evaluation",
   "communication": 7,
@@ -230,63 +172,32 @@ Use exactly this structure:
   "structure": 7,
   "technicalDepth": 7,
   "score": 7,
-  "strengths": [
-    "Strength 1",
-    "Strength 2",
-    "Strength 3"
-  ],
-  "improvements": [
-    "Improvement 1",
-    "Improvement 2",
-    "Improvement 3"
-  ],
+  "strengths": ["Strength 1", "Strength 2", "Strength 3"],
+  "improvements": ["Improvement 1", "Improvement 2", "Improvement 3"],
   "followUpQuestion": "One relevant follow-up interview question"
-}
+}`;
 
-All five scores must be integers between 1 and 10.
-`;
+    console.log("Sending request to Gemini...");
 
-    console.log("Sending request to OpenAI...");
-
-    const response =
-      await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are MIRA. Return ONLY valid JSON.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      generationConfig: {
+        responseMimeType: "application/json",
         temperature: 0,
+      },
+    });
 
-        response_format: {
-          type: "json_object",
-        },
-      });
+    const geminiResponse = await model.generateContent(prompt);
+    const content = geminiResponse.response.text();
 
-    const content =
-      response.choices?.[0]?.message?.content;
-
-    console.log("RAW OPENAI RESPONSE:");
-
+    console.log("RAW GEMINI RESPONSE:");
     console.log(content);
 
-    if (
-      !content ||
-      typeof content !== "string"
-    ) {
+    if (!content || typeof content !== "string") {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "MIRA returned an empty response.",
+          error: "MIRA returned an empty response.",
         },
         { status: 500 }
       );
@@ -295,55 +206,33 @@ All five scores must be integers between 1 and 10.
     let parsed;
 
     try {
-      const jsonText =
-        extractJson(content);
+      const jsonText = extractJson(content);
 
-      console.log(
-        "CLEANED JSON:"
-      );
-
+      console.log("CLEANED JSON:");
       console.log(jsonText);
 
       parsed = JSON.parse(jsonText);
     } catch (parseError) {
-      console.error(
-        "================================="
-      );
-
-      console.error(
-        "MIRA JSON PARSE ERROR"
-      );
-
+      console.error("=================================");
+      console.error("MIRA JSON PARSE ERROR");
       console.error(parseError);
-
-      console.error(
-        "RAW RESPONSE:"
-      );
-
+      console.error("RAW RESPONSE:");
       console.error(content);
-
-      console.error(
-        "================================="
-      );
+      console.error("=================================");
 
       return NextResponse.json(
         {
           success: false,
-          error:
-            "MIRA returned an invalid response. Please try again.",
+          error: "MIRA returned an invalid response. Please try again.",
           rawResponse: content,
         },
         { status: 500 }
       );
     }
 
-    const result =
-      normalizeResult(parsed);
+    const result = normalizeResult(parsed);
 
-    console.log(
-      "FINAL MIRA RESULT:"
-    );
-
+    console.log("FINAL MIRA RESULT:");
     console.log(result);
 
     return NextResponse.json({
@@ -351,19 +240,10 @@ All five scores must be integers between 1 and 10.
       result,
     });
   } catch (error: any) {
-    console.error(
-      "================================="
-    );
-
-    console.error(
-      "MIRA API ERROR"
-    );
-
+    console.error("=================================");
+    console.error("MIRA API ERROR");
     console.error(error);
-
-    console.error(
-      "================================="
-    );
+    console.error("=================================");
 
     return NextResponse.json(
       {
