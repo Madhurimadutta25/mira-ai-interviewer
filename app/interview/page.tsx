@@ -1,8 +1,6 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 /* =========================================================
@@ -108,6 +106,14 @@ function safeScore(value: unknown): number {
 ========================================================= */
 
 export default function InterviewPage() {
+  return (
+    <Suspense fallback={<div style={{ minHeight: "100vh", background: "#0f172a", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px" }}>Loading MIRA...</div>}>
+      <InterviewPageInner />
+    </Suspense>
+  );
+}
+
+function InterviewPageInner() {
   const searchParams = useSearchParams();
 
   const candidateName =
