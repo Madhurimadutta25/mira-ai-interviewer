@@ -5,6 +5,13 @@ const genAI = new GoogleGenerativeAI(
   process.env.GEMINI_API_KEY || ""
 );
 
+// Try these models in order if one fails
+const MODELS = [
+  "gemini-1.5-flash-latest",
+  "gemini-1.5-flash",
+  "gemini-1.5-pro-latest",
+];
+
 type MiraResult = {
   evaluation: string;
   communication: number;
@@ -19,54 +26,32 @@ type MiraResult = {
 
 function extractJson(text: string): string {
   let cleaned = text.trim();
-
-  // Remove markdown code fences
   cleaned = cleaned
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
-
-  // Extract the JSON object if there is surrounding text
   const firstBrace = cleaned.indexOf("{");
   const lastBrace = cleaned.lastIndexOf("}");
-
   if (firstBrace !== -1 && lastBrace !== -1) {
     cleaned = cleaned.slice(firstBrace, lastBrace + 1);
   }
-
   return cleaned;
 }
 
 function normalizeResult(data: any): MiraResult {
-  const numberOrDefault = (
-    value: any,
-    fallback: number
-  ): number => {
+  const num = (value: any, fallback: number): number => {
     const n = Number(value);
-
-    if (Number.isFinite(n)) {
-      return Math.min(10, Math.max(1, Math.round(n)));
-    }
-
-    return fallback;
+    return Number.isFinite(n) ? Math.min(10, Math.max(1, Math.round(n))) : fallback;
   };
 
-  const stringArray = (
-    value: any,
-    fallback: string[]
-  ): string[] => {
+  const arr = (value: any, fallback: string[]): string[] => {
     if (Array.isArray(value)) {
       return value
-        .filter(
-          (item) =>
-            typeof item === "string" &&
-            item.trim().length > 0
-        )
+        .filter((item) => typeof item === "string" && item.trim().length > 0)
         .map((item) => item.trim())
         .slice(0, 5);
     }
-
     return fallback;
   };
 
@@ -75,31 +60,66 @@ function normalizeResult(data: any): MiraResult {
       typeof data?.evaluation === "string"
         ? data.evaluation.trim()
         : "The candidate demonstrated a reasonable understanding of the topic.",
-
-    communication: numberOrDefault(data?.communication, 6),
-    relevance: numberOrDefault(data?.relevance, 6),
-    structure: numberOrDefault(data?.structure, 6),
-    technicalDepth: numberOrDefault(data?.technicalDepth, 6),
-    score: numberOrDefault(data?.score, 6),
-
-    strengths: stringArray(data?.strengths, [
+    communication: num(data?.communication, 6),
+    relevance: num(data?.relevance, 6),
+    structure: num(data?.structure, 6),
+    technicalDepth: num(data?.technicalDepth, 6),
+    score: num(data?.score, 6),
+    strengths: arr(data?.strengths, [
       "The candidate attempted to answer the question.",
       "The answer addressed the main topic.",
       "The candidate showed basic understanding.",
     ]),
-
-    improvements: stringArray(data?.improvements, [
+    improvements: arr(data?.improvements, [
       "Provide more specific examples.",
       "Structure the answer more clearly.",
       "Add more technical detail where appropriate.",
     ]),
-
     followUpQuestion:
       typeof data?.followUpQuestion === "string" &&
       data.followUpQuestion.trim().length > 0
         ? data.followUpQuestion.trim()
         : "Can you explain this concept with a practical example?",
   };
+}
+
+async function callGemini(prompt: string): Promise<string> {
+  let lastError: any;
+
+  for (const modelName of MODELS) {
+    try {
+      console.log(`Trying model: ${modelName}`);
+
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+          responseMimeType: "application/json",
+          temperature: 0,
+        },
+      });
+
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+
+      if (text) {
+        console.log(`Success with model: ${modelName}`);
+        return text;
+      }
+    } catch (err: any) {
+      console.error(`Model ${modelName} failed:`, err?.message || err);
+      lastError = err;
+
+      // If it's a 503 or 429, try next model
+      // If it's auth error (API key invalid), stop immediately
+      const msg = err?.message || "";
+      if (msg.includes("API_KEY") || msg.includes("401") || msg.includes("403")) {
+        throw err;
+      }
+      // Otherwise continue to next model
+    }
+  }
+
+  throw lastError || new Error("All Gemini models failed.");
 }
 
 export async function POST(request: Request) {
@@ -119,18 +139,9 @@ export async function POST(request: Request) {
       candidateName = "Candidate",
     } = body;
 
-    console.log("Candidate:", candidateName);
-    console.log("Role:", role);
-    console.log("Experience:", experience);
-    console.log("Interview Type:", interviewType);
-    console.log("Question:", question);
-
     if (!question || !answer) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "Question and answer are required.",
-        },
+        { success: false, error: "Question and answer are required." },
         { status: 400 }
       );
     }
@@ -143,115 +154,69 @@ Role: ${role}
 Experience: ${experience}
 Interview Type: ${interviewType}
 
-Question:
-${question}
+Question: ${question}
 
-Candidate Answer:
-${answer}
+Candidate Answer: ${answer}
 
-Evaluate using these five scores (integers from 1 to 10):
-- communication: How clearly and confidently the candidate communicates.
-- relevance: How directly the answer addresses the question.
-- structure: How logically and clearly the answer is organized.
-- technicalDepth: How technically accurate and detailed the answer is for the selected role.
-- score: Overall quality of the answer.
+Score these 5 categories as integers from 1 to 10:
+- communication: Clarity and confidence
+- relevance: How directly it answers the question
+- structure: Logical organization
+- technicalDepth: Technical accuracy for the role
+- score: Overall quality
 
 Also provide:
-- evaluation: Brief professional evaluation (2-3 sentences)
+- evaluation: 2-3 sentence professional evaluation
 - strengths: Array of 3 strengths
-- improvements: Array of 3 areas for improvement
-- followUpQuestion: One relevant follow-up interview question
+- improvements: Array of 3 areas to improve
+- followUpQuestion: One follow-up interview question
 
-IMPORTANT: Return ONLY a valid JSON object. No markdown, no code fences, no extra text.
-
-Use exactly this structure:
+Return ONLY valid JSON, no markdown, no extra text:
 {
-  "evaluation": "Brief professional evaluation",
+  "evaluation": "...",
   "communication": 7,
   "relevance": 7,
   "structure": 7,
   "technicalDepth": 7,
   "score": 7,
-  "strengths": ["Strength 1", "Strength 2", "Strength 3"],
-  "improvements": ["Improvement 1", "Improvement 2", "Improvement 3"],
-  "followUpQuestion": "One relevant follow-up interview question"
+  "strengths": ["...", "...", "..."],
+  "improvements": ["...", "...", "..."],
+  "followUpQuestion": "..."
 }`;
 
-    console.log("Sending request to Gemini...");
+    const content = await callGemini(prompt);
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-3.6-flash",
-      generationConfig: {
-        responseMimeType: "application/json",
-        temperature: 0,
-      },
-    });
-
-    const geminiResponse = await model.generateContent(prompt);
-    const content = geminiResponse.response.text();
-
-    console.log("RAW GEMINI RESPONSE:");
-    console.log(content);
-
-    if (!content || typeof content !== "string") {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "MIRA returned an empty response.",
-        },
-        { status: 500 }
-      );
-    }
+    console.log("RAW GEMINI RESPONSE:", content);
 
     let parsed;
-
     try {
-      const jsonText = extractJson(content);
-
-      console.log("CLEANED JSON:");
-      console.log(jsonText);
-
-      parsed = JSON.parse(jsonText);
+      parsed = JSON.parse(extractJson(content));
     } catch (parseError) {
-      console.error("=================================");
-      console.error("MIRA JSON PARSE ERROR");
-      console.error(parseError);
-      console.error("RAW RESPONSE:");
-      console.error(content);
-      console.error("=================================");
-
+      console.error("JSON parse error:", parseError);
       return NextResponse.json(
-        {
-          success: false,
-          error: "MIRA returned an invalid response. Please try again.",
-          rawResponse: content,
-        },
+        { success: false, error: "MIRA returned an invalid response. Please try again." },
         { status: 500 }
       );
     }
 
     const result = normalizeResult(parsed);
+    console.log("FINAL RESULT:", result);
 
-    console.log("FINAL MIRA RESULT:");
-    console.log(result);
-
-    return NextResponse.json({
-      success: true,
-      result,
-    });
+    return NextResponse.json({ success: true, result });
   } catch (error: any) {
-    console.error("=================================");
-    console.error("MIRA API ERROR");
-    console.error(error);
-    console.error("=================================");
+    console.error("MIRA API ERROR:", error);
+
+    const msg = error?.message || "";
+    let userError = "MIRA could not process your answer. Please try again.";
+
+    if (msg.includes("503") || msg.includes("high demand") || msg.includes("unavailable")) {
+      userError = "MIRA is experiencing high demand. Please try again in a few seconds.";
+    } else if (msg.includes("API_KEY") || msg.includes("401") || msg.includes("403")) {
+      userError = "API key error. Please check the GEMINI_API_KEY in Render environment variables.";
+    }
 
     return NextResponse.json(
-      {
-        success: false,
-        error:
-          error?.message ||
-          "MIRA could not process the interview answer.",
-      },
+      { success: false, error: userError },
       { status: 500 }
     );
   }
