@@ -5,9 +5,10 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 
 // Current stable models (v1 API) - tried in order
 const MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.6-flash",
   "gemini-3.5-flash",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
+  "gemini-3.7-flash",
 ];
 
 type MiraResult = {
@@ -85,56 +86,61 @@ async function callGeminiREST(prompt: string): Promise<string> {
   let lastError: any;
 
   for (const modelName of MODELS) {
-    try {
-      console.log(`Trying model: ${modelName}`);
+    // Try each model up to 2 times (for 503 transient errors)
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        console.log(`Trying model: ${modelName} (attempt ${attempt})`);
 
-      // Use v1 endpoint directly (not v1beta)
-      const url = `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
+        const url = `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
 
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: prompt }],
-            },
-          ],
-          generationConfig: {
-            temperature: 0,
-          },
-        }),
-      });
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0 },
+          }),
+        });
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (!response.ok) {
-        const errMsg = data?.error?.message || `HTTP ${response.status}`;
-        console.error(`Model ${modelName} failed: ${errMsg}`);
-        lastError = new Error(errMsg);
+        if (!response.ok) {
+          const errMsg = data?.error?.message || `HTTP ${response.status}`;
+          console.error(`Model ${modelName} attempt ${attempt} failed: ${errMsg}`);
+          lastError = new Error(errMsg);
 
-        // Stop on auth errors
-        if (response.status === 401 || response.status === 403) {
-          throw new Error(errMsg);
+          // Stop on auth errors
+          if (response.status === 401 || response.status === 403) {
+            throw new Error(errMsg);
+          }
+
+          // On 503, wait 1s and retry same model once
+          if (response.status === 503 && attempt === 1) {
+            await new Promise((r) => setTimeout(r, 1000));
+            continue;
+          }
+
+          // Otherwise move to next model
+          break;
         }
-        // Otherwise try next model
-        continue;
-      }
 
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text && text.trim()) {
-        console.log(`Success with model: ${modelName}`);
-        return text;
-      }
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text && text.trim()) {
+          console.log(`Success with model: ${modelName}`);
+          return text;
+        }
 
-      console.error(`Model ${modelName} returned empty response`);
-    } catch (err: any) {
-      const msg = String(err?.message || err);
-      console.error(`Model ${modelName} exception: ${msg}`);
-      lastError = err;
+        console.error(`Model ${modelName} returned empty response`);
+        break;
+      } catch (err: any) {
+        const msg = String(err?.message || err);
+        console.error(`Model ${modelName} exception: ${msg}`);
+        lastError = err;
 
-      if (msg.includes("401") || msg.includes("403") || msg.includes("API key")) {
-        throw err;
+        if (msg.includes("401") || msg.includes("403") || msg.includes("API key")) {
+          throw err;
+        }
+        break;
       }
     }
   }
